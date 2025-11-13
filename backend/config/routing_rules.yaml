@@ -1,0 +1,43 @@
+routing:
+  cache_hit_threshold: 0.10  # Cosine similarity threshold
+  cache_ttl_seconds: 86400   # 24 hours
+
+  complexity_thresholds:
+    simple: 0.2
+    moderate: 0.5
+    complex: 0.8
+
+  model_selection:
+    qwen3_4b:
+      max_complexity: 0.2
+      max_context_tokens: 2048
+      target_latency_ms: 100
+      cost_relative: 1.0
+
+    qwen3_8b:
+      max_complexity: 0.5
+      max_context_tokens: 4096
+      target_latency_ms: 200
+      cost_relative: 1.5
+
+    qwen3_14b:
+      max_complexity: 0.8
+      max_context_tokens: 8192
+      target_latency_ms: 400
+      cost_relative: 2.2
+
+    qwen3_32b:
+      max_complexity: 1.0
+      max_context_tokens: 131072
+      target_latency_ms: 800
+      cost_relative: 3.5
+
+    qwen3_32b_thinking:
+      use_case: "reasoning_required"
+      thinking_budget_tokens: 5000
+      cost_relative: 4.0
+
+escalation:
+  low_confidence_threshold: 0.4
+  escalate_to_larger_model: true
+  confidence_scoring_method: "token_logits"

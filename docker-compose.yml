@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  redis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.redis
+    container_name: qwen3-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - qwen3-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: qwen3-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./models:/app/models
+      - ./checkpoints:/app/checkpoints
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DEVICE_TYPE=server
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+    networks:
+      - qwen3-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+networks:
+  qwen3-network:
+    driver: bridge
+
+volumes:
+  redis-data:

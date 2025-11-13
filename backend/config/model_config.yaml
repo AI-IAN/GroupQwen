@@ -1,0 +1,95 @@
+models:
+  qwen3_4b:
+    name: "Qwen/Qwen3-4B-AWQ"
+    quantization: "awq"
+    vram_gb: 3
+    framework: "llamacpp"
+    max_tokens: 2048
+    context_window: 32768
+    use_case: "edge_device"
+    deployment_targets:
+      - "macbook"
+      - "mobile"
+
+  qwen3_8b:
+    name: "Qwen/Qwen3-8B-AWQ"
+    quantization: "awq"
+    vram_gb: 6
+    framework: "llamacpp"
+    max_tokens: 4096
+    context_window: 131072
+    use_case: "fast_balanced"
+    deployment_targets:
+      - "server"
+      - "macbook"
+
+  qwen3_14b:
+    name: "Qwen/Qwen3-14B-AWQ"
+    quantization: "awq"
+    vram_gb: 11
+    framework: "vllm"
+    max_tokens: 8192
+    context_window: 131072
+    use_case: "balanced"
+    deployment_targets:
+      - "server"
+    vllm_config:
+      gpu_memory_utilization: 0.90
+      max_model_len: 8192
+
+  qwen3_32b:
+    name: "Qwen/Qwen3-32B-AWQ"
+    quantization: "awq"
+    vram_gb: 20
+    framework: "vllm"
+    max_tokens: 16384
+    context_window: 131072
+    use_case: "reasoning"
+    deployment_targets:
+      - "server"
+    vllm_config:
+      gpu_memory_utilization: 0.95
+      max_model_len: 16384
+      rope_scaling:
+        type: "yarn"
+        factor: 4.0
+
+  qwen3_32b_thinking:
+    name: "Qwen/Qwen3-32B-Thinking"
+    quantization: "awq"
+    vram_gb: 22
+    framework: "vllm"
+    max_tokens: 16384
+    context_window: 131072
+    use_case: "advanced_reasoning"
+    deployment_targets:
+      - "server"
+    thinking_config:
+      thinking_budget: 5000
+      thinking_mode: true
+
+  qwen3_vl:
+    name: "Qwen/Qwen3-VL-7B-AWQ"
+    quantization: "awq"
+    vram_gb: 9
+    framework: "vllm"
+    max_tokens: 4096
+    use_case: "vision"
+    deployment_targets:
+      - "server"
+    capabilities:
+      - "image_understanding"
+      - "gui_automation"
+      - "screenshot_analysis"
+      - "ocr"
+
+  qwen3_mt:
+    name: "Qwen/Qwen3-32B-MT"
+    quantization: "q4"
+    vram_gb: 10
+    framework: "vllm"
+    max_tokens: 2048
+    use_case: "translation"
+    deployment_targets:
+      - "server"
+    languages_supported: 92
