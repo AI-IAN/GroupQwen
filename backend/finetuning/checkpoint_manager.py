@@ -116,7 +116,7 @@ class CheckpointManager:
             epoch: Current epoch
             step: Current step
             loss: Current loss
-            metadata: Optional metadata
+            metadata: Optional metadata (should include run_id)
 
         Returns:
             Checkpoint path
@@ -130,11 +130,27 @@ class CheckpointManager:
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
         # Placeholder for actual model saving
-        # model.save_pretrained(str(checkpoint_path))
-        # tokenizer.save_pretrained(str(checkpoint_path))
+        # In production, uncomment:
+        # if model is not None:
+        #     model.save_pretrained(str(checkpoint_path / "model"))
+        # if tokenizer is not None:
+        #     tokenizer.save_pretrained(str(checkpoint_path / "tokenizer"))
+
+        # Save checkpoint metadata to file
+        metadata_file = checkpoint_path / "checkpoint_info.json"
+        checkpoint_info = {
+            "epoch": epoch,
+            "step": step,
+            "loss": loss,
+            "timestamp": datetime.now().isoformat(),
+            "metadata": metadata or {}
+        }
+
+        with open(metadata_file, 'w') as f:
+            json.dump(checkpoint_info, f, indent=2)
 
         # Calculate size (placeholder)
-        size_mb = 100.0  # Placeholder
+        size_mb = 100.0  # In production: calculate actual directory size
 
         # Create checkpoint record
         checkpoint = Checkpoint(
@@ -175,16 +191,24 @@ class CheckpointManager:
         # Remove checkpoints not in keep set
         to_remove = [ckpt for ckpt in self.checkpoints if ckpt.name not in to_keep]
 
-        for ckpt in to_remove:
-            logger.info(f"Removing checkpoint: {ckpt.name}")
+        if to_remove:
+            import shutil
 
-            # Delete checkpoint directory (placeholder)
-            # import shutil
-            # shutil.rmtree(ckpt.path, ignore_errors=True)
+            for ckpt in to_remove:
+                logger.info(f"Removing checkpoint: {ckpt.name}")
 
-            self.checkpoints.remove(ckpt)
+                # Delete checkpoint directory
+                try:
+                    checkpoint_path = Path(ckpt.path)
+                    if checkpoint_path.exists():
+                        shutil.rmtree(checkpoint_path, ignore_errors=True)
+                except Exception as e:
+                    logger.warning(f"Failed to remove checkpoint {ckpt.name}: {e}")
 
-        self._save_checkpoint_index()
+                self.checkpoints.remove(ckpt)
+
+            self._save_checkpoint_index()
+            logger.info(f"Cleaned up {len(to_remove)} old checkpoint(s)")
 
     def get_best_checkpoint(self) -> Optional[Checkpoint]:
         """

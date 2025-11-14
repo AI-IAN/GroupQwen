@@ -217,6 +217,73 @@ async def translate_text(request: TranslationRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Fine-tuning Job Registry (in-memory, use database in production)
+finetune_jobs = {}
+
+
+def run_finetuning_background(job_id: str, request: FinetuneRequest):
+    """Background task for running fine-tuning."""
+    try:
+        from backend.finetuning.trainer import Trainer, TrainingConfig
+        from backend.finetuning.checkpoint_manager import CheckpointManager
+
+        # Update status
+        finetune_jobs[job_id]['status'] = 'running'
+        finetune_jobs[job_id]['started_at'] = datetime.now().isoformat()
+
+        # Create config
+        config = TrainingConfig(
+            model_name=request.base_model,
+            dataset_path=request.dataset_path,
+            output_dir=f"./models/finetuned/{job_id}",
+            epochs=request.epochs or 3,
+            batch_size=request.batch_size or 4,
+            learning_rate=request.learning_rate or 2e-4,
+            lora_rank=request.lora_rank or 16,
+            lora_alpha=request.lora_alpha or 32,
+            save_steps=request.save_steps or 100
+        )
+
+        # Initialize checkpoint manager
+        checkpoint_manager = CheckpointManager(
+            checkpoint_dir=f"./checkpoints/{job_id}"
+        )
+
+        # Initialize trainer
+        trainer = Trainer(config, checkpoint_manager)
+
+        # Set progress callback
+        def update_progress(metrics):
+            if job_id in finetune_jobs:
+                finetune_jobs[job_id]['progress'] = metrics['step'] / (config.epochs * 100)  # Estimate
+                finetune_jobs[job_id]['current_epoch'] = metrics['epoch']
+                finetune_jobs[job_id]['current_loss'] = metrics['loss']
+                finetune_jobs[job_id]['learning_rate'] = metrics['lr']
+
+        trainer.set_progress_callback(update_progress)
+
+        # Run training
+        result = trainer.train()
+
+        # Update job with result
+        if result.success:
+            finetune_jobs[job_id]['status'] = 'completed'
+            finetune_jobs[job_id]['output_dir'] = result.output_dir
+            finetune_jobs[job_id]['final_loss'] = result.final_loss
+            finetune_jobs[job_id]['epochs_completed'] = result.epochs_completed
+            finetune_jobs[job_id]['steps_completed'] = result.steps_completed
+        else:
+            finetune_jobs[job_id]['status'] = 'failed'
+            finetune_jobs[job_id]['error'] = result.error
+
+        finetune_jobs[job_id]['completed_at'] = datetime.now().isoformat()
+
+    except Exception as e:
+        logger.error(f"Fine-tuning background task error: {e}", exc_info=True)
+        finetune_jobs[job_id]['status'] = 'failed'
+        finetune_jobs[job_id]['error'] = str(e)
+
+
 # Fine-tuning Endpoints
 @router.post("/v1/finetune/start", response_model=FinetuneResponse)
 async def start_finetuning(
@@ -225,21 +292,38 @@ async def start_finetuning(
 ):
     """
     Start a fine-tuning job on specified model.
+
+    Runs training in background, allowing API to continue serving requests.
     """
     try:
         job_id = str(uuid.uuid4())
 
-        # TODO: Start fine-tuning in background
-        # background_tasks.add_task(run_finetuning, job_id, request)
+        # Initialize job in registry
+        finetune_jobs[job_id] = {
+            'job_id': job_id,
+            'status': 'queued',
+            'base_model': request.base_model,
+            'dataset_path': request.dataset_path,
+            'created_at': datetime.now().isoformat(),
+            'progress': 0.0,
+            'current_epoch': 0,
+            'current_loss': 0.0,
+            'learning_rate': request.learning_rate or 2e-4
+        }
+
+        # Start training in background
+        background_tasks.add_task(run_finetuning_background, job_id, request)
+
+        logger.info(f"Fine-tuning job {job_id} queued for model {request.base_model}")
 
         return FinetuneResponse(
             job_id=job_id,
             status="queued",
-            message=f"Fine-tuning job {job_id} queued"
+            message=f"Fine-tuning job {job_id} queued for {request.base_model}"
         )
 
     except Exception as e:
-        logger.error(f"Fine-tuning start error: {e}")
+        logger.error(f"Fine-tuning start error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -247,21 +331,76 @@ async def start_finetuning(
 async def get_finetuning_status(job_id: str):
     """
     Get status of a fine-tuning job.
+
+    Returns current progress, loss, and ETA.
     """
     try:
-        # TODO: Query job status from job tracker
+        if job_id not in finetune_jobs:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        job = finetune_jobs[job_id]
+
+        # Calculate ETA (rough estimate)
+        eta_seconds = None
+        if job['status'] == 'running' and job.get('progress', 0) > 0:
+            # Estimate based on progress
+            started_at = datetime.fromisoformat(job['started_at'])
+            elapsed = (datetime.now() - started_at).total_seconds()
+            if job['progress'] > 0:
+                estimated_total = elapsed / job['progress']
+                eta_seconds = int(estimated_total - elapsed)
 
         return FinetuneStatusResponse(
             job_id=job_id,
-            status="running",
-            progress=0.35,
-            current_epoch=1,
-            current_loss=1.2,
-            eta_seconds=1800
+            status=job['status'],
+            progress=job.get('progress', 0.0),
+            current_epoch=job.get('current_epoch', 0),
+            current_loss=job.get('current_loss', 0.0),
+            eta_seconds=eta_seconds
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Fine-tuning status error: {e}")
+        logger.error(f"Fine-tuning status error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/v1/finetune/cancel/{job_id}")
+async def cancel_finetuning(job_id: str):
+    """
+    Cancel a fine-tuning job.
+
+    Note: Background tasks cannot be truly cancelled in FastAPI,
+    but we mark the job as cancelled in our registry.
+    """
+    try:
+        if job_id not in finetune_jobs:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        job = finetune_jobs[job_id]
+
+        if job['status'] in ['completed', 'failed', 'cancelled']:
+            return {
+                "message": f"Job {job_id} already {job['status']}",
+                "status": job['status']
+            }
+
+        # Mark as cancelled
+        finetune_jobs[job_id]['status'] = 'cancelled'
+        finetune_jobs[job_id]['cancelled_at'] = datetime.now().isoformat()
+
+        logger.info(f"Fine-tuning job {job_id} cancelled")
+
+        return {
+            "message": f"Job {job_id} cancelled",
+            "status": "cancelled"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Fine-tuning cancel error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
