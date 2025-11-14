@@ -2,11 +2,12 @@
 API Routes for Qwen3 Local System
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from typing import Optional
 import time
 import uuid
 import logging
+from datetime import datetime
 
 from backend.api.models import (
     ChatCompletionRequest, ChatCompletionResponse,
@@ -25,7 +26,7 @@ router = APIRouter()
 
 # Chat Completion Endpoint
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, req: Request):
     """
     OpenAI-compatible chat completion endpoint.
 
@@ -45,17 +46,79 @@ async def chat_completions(request: ChatCompletionRequest):
             for msg in request.messages[:-1]
         )
 
-        # TODO: Route query using QueryRouter
-        # route = router.route_query(query, context, request.device)
+        # Get components from app state
+        query_router = req.app.state.query_router
+        cache_manager = req.app.state.cache_manager
+        metrics_collector = req.app.state.metrics_collector
 
-        # Placeholder response
-        response_text = f"Response to: {query[:50]}..."
+        # Route query to appropriate model
+        route_decision = query_router.route_query(
+            query=query,
+            context=context,
+            device=request.device or "server",
+            force_model=request.model
+        )
+
+        logger.info(
+            f"Query routed: model={route_decision.model}, "
+            f"complexity={route_decision.complexity_score:.2f}, "
+            f"cache_hit={route_decision.use_cache}"
+        )
+
+        # Handle cache hit
+        if route_decision.use_cache and cache_manager:
+            cache_result = cache_manager.check(query)
+            if cache_result:
+                response_text = cache_result.response
+                model_used = cache_result.model_used or "cache"
+                cache_hit = True
+                latency_ms = 5.0  # Cache latency
+            else:
+                # Cache check in router, but didn't actually hit
+                cache_hit = False
+                response_text = _generate_mock_response(query, route_decision.model)
+                model_used = route_decision.model
+                latency_ms = route_decision.estimated_latency_ms
+        else:
+            # Generate new response
+            cache_hit = False
+            # TODO: Call actual inference handler based on model
+            response_text = _generate_mock_response(query, route_decision.model)
+            model_used = route_decision.model
+            latency_ms = route_decision.estimated_latency_ms
+
+            # Store in cache for future use
+            if cache_manager and not route_decision.use_cache:
+                cache_manager.store(
+                    prompt=query,
+                    response=response_text,
+                    metadata={
+                        "model_used": model_used,
+                        "complexity_score": route_decision.complexity_score
+                    }
+                )
+
+        # Log metrics
+        if metrics_collector:
+            from backend.monitoring.metrics import QueryLog
+
+            metrics_collector.log_query(QueryLog(
+                timestamp=datetime.now(),
+                text=query[:500],
+                model=model_used,
+                latency_ms=latency_ms,
+                cache_hit=cache_hit,
+                user_id=None,
+                success=True,
+                complexity_score=route_decision.complexity_score,
+                tokens_used=int(len(query.split()) * 1.3 + len(response_text.split()) * 1.3)
+            ))
 
         # Build response
         response = ChatCompletionResponse(
             id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
             created=int(time.time()),
-            model=request.model or "qwen3-32b",
+            model=model_used,
             choices=[
                 {
                     "index": 0,
@@ -67,22 +130,40 @@ async def chat_completions(request: ChatCompletionRequest):
                 }
             ],
             usage={
-                "prompt_tokens": len(query.split()) * 1.3,
-                "completion_tokens": len(response_text.split()) * 1.3,
-                "total_tokens": len((query + response_text).split()) * 1.3
+                "prompt_tokens": int(len(query.split()) * 1.3),
+                "completion_tokens": int(len(response_text.split()) * 1.3),
+                "total_tokens": int(len((query + response_text).split()) * 1.3)
             },
             metadata={
-                "cache_hit": False,
-                "complexity_score": 0.5,
-                "model_selected": request.model or "qwen3-32b"
+                "cache_hit": cache_hit,
+                "complexity_score": route_decision.complexity_score,
+                "model_selected": model_used,
+                "latency_ms": latency_ms,
+                "reasoning": route_decision.reasoning
             }
         )
 
         return response
 
     except Exception as e:
-        logger.error(f"Chat completion error: {e}")
+        logger.error(f"Chat completion error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _generate_mock_response(query: str, model: str) -> str:
+    """Generate a mock response for testing (placeholder for actual inference)."""
+    return (
+        f"[Mock Response from {model}]\n\n"
+        f"This is a placeholder response to demonstrate the routing and caching system.\n\n"
+        f"Your query: '{query[:200]}{'...' if len(query) > 200 else ''}'\n\n"
+        f"In production, this would be replaced with actual inference from {model}. "
+        f"The system has successfully:\n"
+        f"- Analyzed query complexity\n"
+        f"- Routed to the appropriate model\n"
+        f"- Prepared for caching\n"
+        f"- Logged metrics\n\n"
+        f"Next step: Implement actual model inference!"
+    )
 
 
 # Vision Analysis Endpoint
@@ -209,90 +290,118 @@ async def list_models():
 
 # Cache Management Endpoints
 @router.get("/v1/cache/stats", response_model=CacheStatsResponse)
-async def get_cache_stats():
+async def get_cache_stats(req: Request):
     """
     Get semantic cache performance statistics.
     """
     try:
-        # TODO: Get actual cache stats from CacheManager
+        cache_manager = req.app.state.cache_manager
 
-        return CacheStatsResponse(
-            hit_rate=0.45,
-            total_cached=1250,
-            total_requests=2500,
-            cache_size_mb=125.5
-        )
+        if cache_manager:
+            stats = cache_manager.get_stats()
+            return CacheStatsResponse(
+                hit_rate=stats.hit_rate,
+                total_cached=stats.total_cached,
+                total_requests=stats.total_requests,
+                cache_size_mb=stats.cache_size_mb
+            )
+        else:
+            # Cache disabled
+            return CacheStatsResponse(
+                hit_rate=0.0,
+                total_cached=0,
+                total_requests=0,
+                cache_size_mb=0.0
+            )
 
     except Exception as e:
-        logger.error(f"Cache stats error: {e}")
+        logger.error(f"Cache stats error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/v1/cache/clear")
-async def clear_cache():
+async def clear_cache(req: Request):
     """
     Clear all cached responses.
     """
     try:
-        # TODO: Clear cache using CacheManager
-        # cache_manager.clear_all()
+        cache_manager = req.app.state.cache_manager
 
-        return {"message": "Cache cleared successfully"}
+        if cache_manager:
+            cache_manager.clear_all()
+            return {"message": "Cache cleared successfully", "status": "success"}
+        else:
+            return {"message": "Cache is disabled", "status": "disabled"}
 
     except Exception as e:
-        logger.error(f"Clear cache error: {e}")
+        logger.error(f"Clear cache error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # System Health and Metrics
 @router.get("/v1/health", response_model=HealthCheckResponse)
-async def health_check():
+async def health_check(req: Request):
     """
     System health check endpoint.
     """
     try:
-        # TODO: Perform actual health check
-        # health_checker.check_health()
+        from backend.monitoring.health_check import HealthChecker
 
-        from datetime import datetime
+        # Get components from app state
+        redis_client = req.app.state.redis_client
+        model_loader = req.app.state.model_loader
+
+        # Perform health check
+        health_checker = HealthChecker()
+        health_status = await health_checker.check_health(
+            redis_client=redis_client,
+            model_loader=model_loader,
+            device_info=None  # TODO: Add device_info
+        )
 
         return HealthCheckResponse(
-            status="healthy",
-            timestamp=datetime.now().isoformat(),
-            checks={
-                "redis": True,
-                "gpu": True,
-                "models": True,
-                "disk": True
-            },
-            details={
-                "redis": "Connected",
-                "gpu": "1 GPU available",
-                "models": "3 models loaded",
-                "disk": "Sufficient space"
-            }
+            status=health_status.status,
+            timestamp=health_status.timestamp,
+            checks=health_status.checks,
+            details=health_status.details
         )
 
     except Exception as e:
-        logger.error(f"Health check error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Health check error: {e}", exc_info=True)
+        # Return unhealthy status instead of error
+        return HealthCheckResponse(
+            status="unhealthy",
+            timestamp=datetime.now().isoformat(),
+            checks={"error": False},
+            details={"error": str(e)}
+        )
 
 
 @router.get("/v1/metrics", response_model=MetricsResponse)
-async def get_metrics():
+async def get_metrics(req: Request):
     """
     Get system performance metrics.
     """
     try:
-        # TODO: Get actual metrics from MetricsCollector
+        metrics_collector = req.app.state.metrics_collector
 
-        return MetricsResponse(
-            total_queries=2500,
-            cache_hit_rate=0.45,
-            avg_latency_ms=250.0,
-            models_used=["qwen3-32b", "qwen3-14b", "qwen3-8b", "cache"]
-        )
+        if metrics_collector:
+            stats = metrics_collector.get_summary_stats()
+            return MetricsResponse(
+                total_queries=stats["total_queries"],
+                cache_hit_rate=stats["cache_hit_rate"],
+                avg_latency_ms=stats["avg_latency_ms"],
+                models_used=stats["models_used"]
+            )
+        else:
+            # Metrics disabled
+            return MetricsResponse(
+                total_queries=0,
+                cache_hit_rate=0.0,
+                avg_latency_ms=0.0,
+                models_used=[]
+            )
 
     except Exception as e:
-        logger.error(f"Metrics error: {e}")
+        logger.error(f"Metrics error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
