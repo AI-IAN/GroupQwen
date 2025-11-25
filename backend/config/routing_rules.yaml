@@ -37,7 +37,50 @@ routing:
       thinking_budget_tokens: 5000
       cost_relative: 4.0
 
+    qwen3_32b_thinking:
+      use_case: "reasoning_required"
+      thinking_budget_tokens: 5000
+      cost_relative: 4.0
+
+    # OLMo3 Model Selection Rules
+    olmo3_7b:
+      max_complexity: 0.5
+      max_context_tokens: 4096
+      target_latency_ms: 200
+      cost_relative: 1.5
+      description: "Alternative to Qwen3-8B for testing/comparison"
+
+    olmo3_7b_instruct:
+      max_complexity: 0.5
+      max_context_tokens: 4096
+      target_latency_ms: 200
+      cost_relative: 1.5
+      description: "Instruction-tuned OLMo3-7B for chat tasks"
+
+    olmo3_32b:
+      max_complexity: 1.0
+      max_context_tokens: 8192
+      target_latency_ms: 800
+      cost_relative: 3.5
+      description: "Large model for complex reasoning (alternative to Qwen3-32B)"
+
+    olmo3_32b_instruct:
+      max_complexity: 1.0
+      max_context_tokens: 8192
+      target_latency_ms: 800
+      cost_relative: 3.5
+      description: "Instruction-tuned OLMo3-32B for advanced tasks"
+
 escalation:
   low_confidence_threshold: 0.4
   escalate_to_larger_model: true
   confidence_scoring_method: "token_logits"
+
+# Model comparison and testing
+model_families:
+  qwen:
+    models: ["qwen3_4b", "qwen3_8b", "qwen3_14b", "qwen3_32b", "qwen3_32b_thinking"]
+    specialty: ["qwen3_vl", "qwen3_mt"]
+  olmo:
+    models: ["olmo3_7b", "olmo3_7b_instruct", "olmo3_32b", "olmo3_32b_instruct"]
+    specialty: []
