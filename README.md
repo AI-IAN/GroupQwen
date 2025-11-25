@@ -1,17 +1,20 @@
-# Qwen3 Local AI Orchestration System
+# Local Multi-Model AI Orchestration System
 
-A production-grade local AI inference system that intelligently routes queries across multiple Qwen3 models (4B through 32B variants) with semantic caching, fine-tuning capabilities, and multi-device remote access.
+A production-grade local AI inference system that intelligently routes queries across multiple model families (Qwen3, OLMo3, and more) with semantic caching, fine-tuning capabilities, and multi-device remote access. Supports models from 4B to 70B+ parameters with automatic complexity-based routing.
 
 ## Features
 
 - **Intelligent Query Routing**: Automatically routes queries to optimal models based on complexity
 - **Semantic Caching**: 40-60% of queries served from cache with <10ms latency
-- **Multi-Model Support**: Qwen3-4B, 8B, 14B, 32B, VL, and MT variants
+- **Multi-Model Family Support**:
+  - **Qwen3:** 4B, 8B, 14B, 32B, 32B-Thinking, VL (vision), MT (translation)
+  - **OLMo3:** 7B, 7B-Instruct, 32B, 32B-Instruct (newly added)
+  - Extensible architecture for adding new model families
 - **Fine-Tuning Pipeline**: QLoRA-based fine-tuning on custom datasets
 - **Multi-Device Access**: Server, MacBook, and mobile access via Tailscale
 - **Vision Capabilities**: Screenshot analysis, OCR, GUI automation with Qwen3-VL
 - **Translation**: 92-language support with Qwen3-MT
-- **Production-Ready**: Docker deployment, monitoring, health checks
+- **Production-Ready**: Docker deployment, monitoring, health checks, metrics
 
 ## Architecture
 
@@ -30,55 +33,48 @@ A production-grade local AI inference system that intelligently routes queries a
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
-│              Inference Layer                                │
-│  Qwen3-8B • Qwen3-14B • Qwen3-32B • Qwen3-VL • Qwen3-MT    │
+│              Inference Layer (Multi-Model)                  │
+│  Qwen3: 4B • 8B • 14B • 32B • VL • MT                      │
+│  OLMo3: 7B • 7B-Instruct • 32B • 32B-Instruct              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
+**For detailed installation instructions, see [GETTING_STARTED.md](GETTING_STARTED.md)**
+
 ### Prerequisites
 
 - Python 3.10+
-- NVIDIA GPU with 32GB VRAM (RTX 5090 or similar)
-- CUDA 12.4+
+- NVIDIA GPU (8GB+ VRAM recommended) or Apple Silicon Mac
 - Redis server
-- 64GB system RAM recommended
+- 16GB+ system RAM
 
 ### Installation
 
-1. Clone the repository:
 ```bash
+# 1. Clone and setup
 git clone https://github.com/yourusername/GroupQwen
 cd GroupQwen
-```
-
-2. Run the setup script:
-```bash
 ./scripts/setup.sh
-```
 
-3. Edit `.env` file with your configuration:
-```bash
+# 2. Configure environment
 nano .env
-```
 
-4. Download models:
-```bash
+# 3. Start Redis
+redis-server  # or: sudo systemctl start redis-server
+
+# 4. Download models (optional for testing)
 ./scripts/download_models.sh
-```
 
-5. Start Redis (if not running):
-```bash
-redis-server
-```
-
-6. Start the API server:
-```bash
+# 5. Start API server
+source venv/bin/activate
 python -m backend.api.main
 ```
 
 The API will be available at `http://localhost:8000`
+
+**See [GETTING_STARTED.md](GETTING_STARTED.md) for detailed setup and troubleshooting.**
 
 ### Docker Deployment
 
@@ -153,17 +149,32 @@ GroupQwen/
 
 - **Cache Hit Rate**: 40-60%
 - **Cached Query Latency**: <20ms
-- **Qwen3-8B Latency**: <300ms
-- **Qwen3-32B Latency**: <1000ms
+- **Small Models (4B-8B)**: <300ms
+- **Medium Models (14B)**: <500ms
+- **Large Models (32B)**: <1000ms
 - **GPU Utilization**: 90-95%
+
+**Note:** Actual performance depends on hardware. See benchmarks in `scripts/benchmark.py`.
 
 ## Configuration
 
 Key configuration files:
 
-- `.env`: Environment variables
-- `backend/config/model_config.yaml`: Model specifications
-- `backend/config/routing_rules.yaml`: Routing thresholds
+- `.env`: Environment variables (device type, Redis URL, API settings)
+- `backend/config/model_config.yaml`: Model specifications (Qwen3 + OLMo3 definitions)
+- `backend/config/routing_rules.yaml`: Routing thresholds and model selection rules
+
+### Supported Models
+
+**Qwen3 Family:**
+- qwen3_4b, qwen3_8b, qwen3_14b, qwen3_32b, qwen3_32b_thinking
+- qwen3_vl (vision), qwen3_mt (translation)
+
+**OLMo3 Family (newly added):**
+- olmo3_7b, olmo3_7b_instruct
+- olmo3_32b, olmo3_32b_instruct
+
+All models support AWQ quantization for reduced VRAM usage.
 
 ## Fine-Tuning
 
@@ -224,9 +235,28 @@ flake8 backend/
 2. Connect devices to same Tailnet
 3. Access API via Tailscale IP: `http://<tailscale-ip>:8000`
 
-## Troubleshooting
+## Development
 
-See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common issues.
+**For developers continuing this project:**
+- See [DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md) for development priorities and next steps
+- See [GETTING_STARTED.md](GETTING_STARTED.md) for setup and troubleshooting
+- See [SystemSpec.md](SystemSpec.md) for detailed technical specification
+
+**Current Status:** ~45-50% complete. Core routing and caching work. Inference handlers need implementation.
+
+### Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+### Benchmarking Models
+
+```bash
+python scripts/benchmark.py
+```
+
+Compare Qwen3 vs OLMo3 performance across different model sizes.
 
 ## Contributing
 
@@ -238,12 +268,20 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
-- Qwen team for the Qwen3 model family
-- vLLM for GPU inference optimization
-- Unsloth for efficient fine-tuning
+- **Alibaba Cloud** - Qwen3 model family
+- **Allen Institute for AI** - OLMo3 model family
+- **vLLM team** - GPU inference optimization
+- **Unsloth** - Efficient fine-tuning
+- **llama.cpp** - CPU/Metal inference
+
+## Documentation
+
+- **[GETTING_STARTED.md](GETTING_STARTED.md)** - Installation, setup, and troubleshooting
+- **[DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md)** - Development priorities and next steps (for developers)
+- **[SystemSpec.md](SystemSpec.md)** - Detailed technical specification and architecture
+- **API Docs** - http://localhost:8000/docs (when server is running)
 
 ## Support
 
-- Documentation: [docs/](docs/)
 - Issues: [GitHub Issues](https://github.com/yourusername/GroupQwen/issues)
 - Discussions: [GitHub Discussions](https://github.com/yourusername/GroupQwen/discussions)

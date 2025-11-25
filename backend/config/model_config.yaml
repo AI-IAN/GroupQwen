@@ -93,3 +93,66 @@ models:
     deployment_targets:
       - "server"
     languages_supported: 92
+
+  # OLMo3 Model Family (Allen Institute - newly released)
+  olmo3_7b:
+    name: "allenai/OLMo3-7B"
+    quantization: "awq"
+    vram_gb: 5
+    framework: "vllm"
+    max_tokens: 4096
+    context_window: 131072
+    use_case: "fast_balanced"
+    deployment_targets:
+      - "server"
+      - "macbook"
+    vllm_config:
+      gpu_memory_utilization: 0.85
+      max_model_len: 4096
+    description: "Open Language Model 3 - 7B parameter model, comparable to Qwen3-8B"
+
+  olmo3_7b_instruct:
+    name: "allenai/OLMo3-7B-Instruct"
+    quantization: "awq"
+    vram_gb: 5
+    framework: "vllm"
+    max_tokens: 4096
+    context_window: 131072
+    use_case: "fast_balanced"
+    deployment_targets:
+      - "server"
+      - "macbook"
+    vllm_config:
+      gpu_memory_utilization: 0.85
+      max_model_len: 4096
+    description: "Instruction-tuned variant of OLMo3-7B for chat and task completion"
+
+  olmo3_32b:
+    name: "allenai/OLMo3-32B"
+    quantization: "awq"
+    vram_gb: 20
+    framework: "vllm"
+    max_tokens: 8192
+    context_window: 131072
+    use_case: "reasoning"
+    deployment_targets:
+      - "server"
+    vllm_config:
+      gpu_memory_utilization: 0.95
+      max_model_len: 8192
+    description: "Large OLMo3 model for advanced reasoning, comparable to Qwen3-32B"
+
+  olmo3_32b_instruct:
+    name: "allenai/OLMo3-32B-Instruct"
+    quantization: "awq"
+    vram_gb: 20
+    framework: "vllm"
+    max_tokens: 8192
+    context_window: 131072
+    use_case: "advanced_reasoning"
+    deployment_targets:
+      - "server"
+    vllm_config:
+      gpu_memory_utilization: 0.95
+      max_model_len: 8192
+    description: "Instruction-tuned OLMo3-32B for complex tasks and reasoning"
