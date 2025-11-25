@@ -3,11 +3,13 @@ API Routes for Qwen3 Local System
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
-from typing import Optional
+from typing import Optional, Dict, Any
 import time
 import uuid
 import logging
 from datetime import datetime
+import yaml
+from pathlib import Path
 
 from backend.api.models import (
     ChatCompletionRequest, ChatCompletionResponse,
@@ -18,10 +20,80 @@ from backend.api.models import (
     CacheStatsResponse, HealthCheckResponse, MetricsResponse
 )
 
+# Import vLLM handler components
+from backend.inference.vllm_handler import (
+    VLLMHandler,
+    InferenceRequest,
+    create_vllm_handler_from_config
+)
+
 logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter()
+
+# Global handler cache - initialized on first use
+_vllm_handlers: Dict[str, VLLMHandler] = {}
+_model_configs: Optional[Dict[str, Any]] = None
+
+
+def _load_model_configs() -> Dict[str, Any]:
+    """Load model configurations from YAML file."""
+    global _model_configs
+    if _model_configs is None:
+        config_path = Path(__file__).parent.parent / "config" / "model_config.yaml"
+        with open(config_path, 'r') as f:
+            _model_configs = yaml.safe_load(f)["models"]
+    return _model_configs
+
+
+def _get_or_create_vllm_handler(model_key: str) -> VLLMHandler:
+    """
+    Get or create vLLM handler for a model.
+
+    Args:
+        model_key: Model identifier (e.g., "qwen3-8b", "olmo3-7b-instruct")
+
+    Returns:
+        VLLMHandler instance
+
+    Raises:
+        ValueError: If model not found or not configured for vLLM
+    """
+    global _vllm_handlers
+
+    # Return cached handler if exists
+    if model_key in _vllm_handlers:
+        handler = _vllm_handlers[model_key]
+        if not handler.is_loaded:
+            logger.info(f"Loading cached handler for {model_key}")
+            handler.load()
+        return handler
+
+    # Load model configs
+    model_configs = _load_model_configs()
+
+    # Convert model key format (e.g., "qwen3-8b" -> "qwen3_8b")
+    config_key = model_key.replace("-", "_")
+
+    if config_key not in model_configs:
+        raise ValueError(f"Model config not found: {model_key}")
+
+    model_config = model_configs[config_key]
+
+    # Check if model uses vLLM framework
+    if model_config.get("framework") != "vllm":
+        raise ValueError(f"Model {model_key} does not use vLLM framework (uses {model_config.get('framework')})")
+
+    # Create and load handler
+    logger.info(f"Creating new vLLM handler for {model_key}")
+    handler = create_vllm_handler_from_config(model_key, model_config)
+    handler.load()
+
+    # Cache for future use
+    _vllm_handlers[model_key] = handler
+
+    return handler
 
 
 # Chat Completion Endpoint
@@ -73,22 +145,28 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 model_used = cache_result.model_used or "cache"
                 cache_hit = True
                 latency_ms = 5.0  # Cache latency
+                usage = {
+                    "prompt_tokens": int(len(query.split()) * 1.3),
+                    "completion_tokens": int(len(response_text.split()) * 1.3),
+                    "total_tokens": int(len((query + response_text).split()) * 1.3)
+                }
             else:
                 # Cache check in router, but didn't actually hit
                 cache_hit = False
-                response_text = _generate_mock_response(query, route_decision.model)
-                model_used = route_decision.model
-                latency_ms = route_decision.estimated_latency_ms
+                response_text, model_used, latency_ms, usage = await _generate_response(
+                    request=request,
+                    route_decision=route_decision
+                )
         else:
-            # Generate new response
+            # Generate new response using vLLM handler
             cache_hit = False
-            # TODO: Call actual inference handler based on model
-            response_text = _generate_mock_response(query, route_decision.model)
-            model_used = route_decision.model
-            latency_ms = route_decision.estimated_latency_ms
+            response_text, model_used, latency_ms, usage = await _generate_response(
+                request=request,
+                route_decision=route_decision
+            )
 
             # Store in cache for future use
-            if cache_manager and not route_decision.use_cache:
+            if cache_manager:
                 cache_manager.store(
                     prompt=query,
                     response=response_text,
@@ -111,7 +189,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                 user_id=None,
                 success=True,
                 complexity_score=route_decision.complexity_score,
-                tokens_used=int(len(query.split()) * 1.3 + len(response_text.split()) * 1.3)
+                tokens_used=usage.get("total_tokens", 0)
             ))
 
         # Build response
@@ -129,11 +207,7 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
                     "finish_reason": "stop"
                 }
             ],
-            usage={
-                "prompt_tokens": int(len(query.split()) * 1.3),
-                "completion_tokens": int(len(response_text.split()) * 1.3),
-                "total_tokens": int(len((query + response_text).split()) * 1.3)
-            },
+            usage=usage,
             metadata={
                 "cache_hit": cache_hit,
                 "complexity_score": route_decision.complexity_score,
@@ -148,6 +222,74 @@ async def chat_completions(request: ChatCompletionRequest, req: Request):
     except Exception as e:
         logger.error(f"Chat completion error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _generate_response(
+    request: ChatCompletionRequest,
+    route_decision: Any
+) -> tuple[str, str, float, Dict[str, int]]:
+    """
+    Generate response using appropriate handler based on routed model.
+
+    Args:
+        request: Chat completion request
+        route_decision: Routing decision from query router
+
+    Returns:
+        Tuple of (response_text, model_used, latency_ms, usage)
+
+    Raises:
+        HTTPException: If generation fails
+    """
+    model_key = route_decision.model
+
+    try:
+        # Get or create vLLM handler for the model
+        handler = _get_or_create_vllm_handler(model_key)
+
+        # Create inference request
+        inference_request = InferenceRequest(
+            messages=[{"role": msg.role, "content": msg.content} for msg in request.messages],
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            top_p=request.top_p,
+            stream=request.stream
+        )
+
+        # Generate response
+        inference_response = await handler.generate(inference_request)
+
+        return (
+            inference_response.content,
+            inference_response.model,
+            inference_response.latency_ms,
+            inference_response.usage
+        )
+
+    except ValueError as e:
+        # Model not configured for vLLM - fall back to mock
+        logger.warning(f"Model {model_key} not available for vLLM, using mock response: {e}")
+        response_text = _generate_mock_response(
+            request.messages[-1].content,
+            model_key
+        )
+        return (
+            response_text,
+            model_key,
+            route_decision.estimated_latency_ms,
+            {
+                "prompt_tokens": int(len(request.messages[-1].content.split()) * 1.3),
+                "completion_tokens": int(len(response_text.split()) * 1.3),
+                "total_tokens": int(len((request.messages[-1].content + response_text).split()) * 1.3)
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Generation failed for model {model_key}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model inference failed: {str(e)}"
+        )
 
 
 def _generate_mock_response(query: str, model: str) -> str:
